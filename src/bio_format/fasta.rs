@@ -1,34 +1,37 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Cursor};
 
-use noodles::fasta::{
+use noodles_fasta::{
     record::{Definition as FastaDefinition, Record as FastaRecord, Sequence},
-    Writer as FastaWriter,
+    io::Writer as FastaWriter,
 };
-use noodles::fastq::{
+use noodles_fastq::{
     record::{Definition as FastqDefinition, Record as FastqRecord},
-    Writer as FastqWriter,
+    io::Writer as FastqWriter,
 };
-use noodles::{bgzf, fasta, fastq};
-use nu_plugin::{EvaluatedCall, LabeledError};
+use noodles_bgzf as bgzf;
+use noodles_fasta as fasta;
+use noodles_fastq as fastq;
+use nu_plugin::EvaluatedCall;
+use nu_protocol::LabeledError;
 use nu_protocol::Value;
 
 use crate::bio_format::{Compression, SpanExt};
 
 /// Compression status of a fastq reader.
 enum FastqReader<'a> {
-    Uncompressed(Box<fastq::Reader<&'a [u8]>>),
-    Compressed(Box<fastq::Reader<BufReader<bgzf::Reader<&'a [u8]>>>>),
+    Uncompressed(Box<fastq::io::Reader<&'a [u8]>>),
+    Compressed(Box<fastq::io::Reader<BufReader<bgzf::io::Reader<&'a [u8]>>>>),
 }
 
 /// Compression status of a fasta reader.
 enum FastaReader<'a> {
-    Uncompressed(Box<fasta::Reader<&'a [u8]>>),
-    Compressed(fasta::Reader<Box<bgzf::Reader<&'a [u8]>>>),
+    Uncompressed(Box<fasta::io::Reader<&'a [u8]>>),
+    Compressed(fasta::io::Reader<Box<bgzf::io::Reader<&'a [u8]>>>),
 }
 
 /// Iterate over the records of a reader that implements [`BufRead`].
 fn iterate_fastq_records<R: BufRead>(
-    mut reader: fastq::Reader<R>,
+    mut reader: fastq::io::Reader<R>,
     call: &EvaluatedCall,
     value_records: &mut Vec<Value>,
     description: bool,
@@ -37,11 +40,7 @@ fn iterate_fastq_records<R: BufRead>(
 ) -> Result<(), LabeledError> {
     // iterate over the records.
     for record in reader.records() {
-        let r = record.map_err(|e| LabeledError {
-            label: "Record reading failed.".into(),
-            msg: format!("cause of failure: {}", e),
-            span: Some(call.head),
-        })?;
+        let r = record.map_err(|e| LabeledError::new(format!("Record reading failed. cause of failure: {}", e)))?;
 
         let mut vec_vals = Vec::new();
         vec_vals.push(call.head.with_string_from_utf8(r.name()));
@@ -72,20 +71,20 @@ pub fn from_fastq_inner(
     gz: Compression,
 ) -> Result<Vec<Value>, LabeledError> {
     // parse description flag.
-    let description = call.has_flag("description");
-    let quality_scores = call.has_flag("quality-scores");
+    let description = call.has_flag("description")?;
+    let quality_scores = call.has_flag("quality-scores")?;
 
-    let bytes = input.as_binary().map_err(|e| LabeledError {
-        label: "Value conversion to binary failed.".into(),
-        msg: format!("cause of failure: {}", e),
-        span: Some(call.head),
-    })?;
+    let bytes = match input {
+        Value::Binary { val, .. } => val.clone(),
+        Value::String { val, .. } => val.as_bytes().to_vec(),
+        _ => return Err(LabeledError::new("Input must be binary or string data")),
+    };
 
     let reader = match gz {
-        Compression::Uncompressed => FastqReader::Uncompressed(Box::new(fastq::Reader::new(bytes))),
+        Compression::Uncompressed => FastqReader::Uncompressed(Box::new(fastq::io::Reader::new(bytes.as_slice()))),
         Compression::Gzipped => {
-            let gz = bgzf::Reader::new(bytes);
-            FastqReader::Compressed(Box::new(fastq::Reader::new(BufReader::new(gz))))
+            let gz = bgzf::io::Reader::new(bytes.as_slice());
+            FastqReader::Compressed(Box::new(fastq::io::Reader::new(BufReader::new(gz))))
         }
     };
 
@@ -134,7 +133,7 @@ pub fn from_fastq_inner(
 }
 
 fn iterate_fasta_records<R: BufRead>(
-    mut reader: fasta::Reader<R>,
+    mut reader: fasta::io::Reader<R>,
     call: &EvaluatedCall,
     value_records: &mut Vec<Value>,
     description: bool,
@@ -142,15 +141,11 @@ fn iterate_fasta_records<R: BufRead>(
 ) -> Result<(), LabeledError> {
     // iterate over the records
     for record in reader.records() {
-        let r = record.map_err(|e| LabeledError {
-            label: "Record reading failed.".into(),
-            msg: format!("cause of failure: {}", e),
-            span: Some(call.head),
-        })?;
+        let r = record.map_err(|e| LabeledError::new(format!("Record reading failed. cause of failure: {}", e)))?;
 
         let mut vec_vals = Vec::new();
 
-        vec_vals.push(call.head.with_string(r.name()));
+        vec_vals.push(call.head.with_string(String::from_utf8_lossy(r.name())));
 
         if description {
             vec_vals.push(call.head.with_string_or(r.description(), ""));
@@ -174,15 +169,19 @@ pub fn from_fasta_inner(
     gz: Compression,
 ) -> Result<Vec<Value>, LabeledError> {
     // parse description flag.
-    let description = call.has_flag("description");
+    let description = call.has_flag("description")?;
 
-    let bytes = input.as_binary()?;
+    let bytes = match input {
+        Value::Binary { val, .. } => val.clone(),
+        Value::String { val, .. } => val.as_bytes().to_vec(),
+        _ => return Err(LabeledError::new("Input must be binary or string data")),
+    };
 
     let reader = match gz {
-        Compression::Uncompressed => FastaReader::Uncompressed(Box::new(fasta::Reader::new(bytes))),
+        Compression::Uncompressed => FastaReader::Uncompressed(Box::new(fasta::io::Reader::new(bytes.as_slice()))),
         Compression::Gzipped => {
-            let gz = Box::new(bgzf::Reader::new(bytes));
-            FastaReader::Compressed(fasta::Reader::new(gz))
+            let gz = Box::new(bgzf::io::Reader::new(bytes.as_slice()));
+            FastaReader::Compressed(fasta::io::Reader::new(gz))
         }
     };
 
@@ -218,31 +217,23 @@ pub fn nuon_to_fasta(call: &EvaluatedCall, input: &Value) -> Result<Value, Label
     if let Ok(list) = input.as_list() {
         for el in list {
             let inner = el.as_record()?;
-            let mut vals = inner.vals.clone();
+            let mut vals: Vec<Value> = inner.iter().map(|(_, v)| v.clone()).collect();
             let last = vals.pop().unwrap();
-            let sequence = last.as_string()?;
+            let sequence = last.as_str()?;
 
-            let id = vals.get(0).map(|e| e.as_string().unwrap());
-            let description = vals.get(1).map(|e| e.as_string().unwrap());
+            let id = vals.get(0).map(|e| e.as_str().unwrap());
+            let description = vals.get(1).map(|e| e.as_str().unwrap());
 
-            let fa_def = FastaDefinition::new(id.unwrap_or("".into()), description);
-            let fa_seq = Sequence::from(sequence.into_bytes());
+            let fa_def = FastaDefinition::new(id.unwrap_or("".into()), description.map(|s| s.as_bytes().into()));
+            let fa_seq = Sequence::from(sequence.as_bytes().to_vec());
 
             out.write_record(&FastaRecord::new(fa_def.clone(), fa_seq))
-                .map_err(|err| LabeledError {
-                    label: format!("Error in writing record ({}) to fasta", fa_def),
-                    msg: err.to_string(),
-                    span: Some(call.head),
-                })?;
+                .map_err(|err| LabeledError::new(format!("Error in writing record ({}) to fasta: {}", fa_def, err)))?;
         }
     }
 
     let bytes = out.get_ref();
-    let out_final = String::from_utf8(bytes.clone()).map_err(|err| LabeledError {
-        label: "Can't format bytes as UTF-8".into(),
-        msg: err.to_string(),
-        span: Some(call.head),
-    })?;
+    let out_final = String::from_utf8(bytes.clone()).map_err(|err| LabeledError::new(format!("Can't format bytes as UTF-8: {}", err)))?;
 
     Ok(Value::string(out_final, call.head))
 }
@@ -256,7 +247,7 @@ pub fn nuon_to_fastq(call: &EvaluatedCall, input: &Value) -> Result<Value, Label
         let (description, quality) = match first {
             Some(e) => {
                 let first_inner = e.as_record()?;
-                let cols = first_inner.cols.clone();
+                let cols: Vec<String> = first_inner.iter().map(|(k, _)| k.clone()).collect();
                 (
                     cols.contains(&String::from("description")),
                     cols.contains(&String::from("quality_scores")),
@@ -264,41 +255,33 @@ pub fn nuon_to_fastq(call: &EvaluatedCall, input: &Value) -> Result<Value, Label
             }
             None => {
                 // what's the error?
-                return Err(LabeledError {
-                    label: "No value".into(),
-                    msg: "There was no first value to call `to fastq` on".into(),
-                    span: Some(call.head),
-                });
+                return Err(LabeledError::new("No value: There was no first value to call `to fastq` on"));
             }
         };
 
         // if we don't have quality scores no point going further.
         if !quality {
-            return Err(LabeledError {
-                label: "No quality scores".into(),
-                msg: "Consider using `to fasta` if you don't have any quality scores, or pass the -q option on a fastq".into(),
-                span: Some(call.head),
-            });
+            return Err(LabeledError::new("No quality scores: Consider using `to fasta` if you don't have any quality scores, or pass the -q option on a fastq"));
         }
 
         for el in list {
             let inner = el.as_record()?;
             // we need to check the columns.
-            let mut vals = inner.vals.clone();
+            let mut vals: Vec<Value> = inner.iter().map(|(_, v)| v.clone()).collect();
             let last = vals.pop().unwrap();
-            let sequence = last.as_string()?;
+            let sequence = last.as_str()?;
 
-            let id = vals.get(0).map(|e| e.as_string().unwrap());
+            let id = vals.get(0).map(|e| e.as_str().unwrap());
 
             let (d, q) = match (description, quality) {
                 (true, true) => {
                     // we got both
-                    let d = vals.get(1).map(|e| e.as_string().unwrap());
-                    let q = vals.get(2).map(|e| e.as_string().unwrap());
+                    let d = vals.get(1).map(|e| e.as_str().unwrap());
+                    let q = vals.get(2).map(|e| e.as_str().unwrap());
                     (d, q)
                 }
                 (false, true) => {
-                    let q = vals.get(1).map(|e| e.as_string().unwrap());
+                    let q = vals.get(1).map(|e| e.as_str().unwrap());
                     (None, q)
                 }
                 _ => unreachable!(),
@@ -311,20 +294,12 @@ pub fn nuon_to_fastq(call: &EvaluatedCall, input: &Value) -> Result<Value, Label
                 sequence.as_bytes(),
                 q.unwrap_or("".into()).as_bytes(),
             ))
-            .map_err(|err| LabeledError {
-                label: format!("Error in writing record ({:?}) to fastq", fq_def),
-                msg: err.to_string(),
-                span: Some(call.head),
-            })?;
+            .map_err(|err| LabeledError::new(format!("Error in writing record ({:?}) to fastq: {}", fq_def, err)))?;
         }
     }
 
     let bytes = out.get_ref();
-    let out_final = String::from_utf8(bytes.clone()).map_err(|err| LabeledError {
-        label: "Can't format bytes as UTF-8".into(),
-        msg: err.to_string(),
-        span: Some(call.head),
-    })?;
+    let out_final = String::from_utf8(bytes.clone()).map_err(|err| LabeledError::new(format!("Can't format bytes as UTF-8: {}", err)))?;
 
     Ok(Value::string(out_final, call.head))
 }
