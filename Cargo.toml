@@ -5,13 +5,13 @@ repository = "https://github.com/"
 edition = "2021"
 license = "MIT"
 name = "nu_plugin_bio"
-version = "0.85.0"
+version = "0.104.0"
 
 [dependencies]
-nu-plugin = { version = "0.85.0" }
-nu-protocol = { version = "0.85.0", features = ["plugin"] }
-# work from repo, as there are bug fixes in there which I raised, and are now fixed.
-noodles = { version = "0.53.0", features = [
+nu-plugin = { version = "0.104.0" }
+nu-protocol = { version = "0.104.0", features = ["plugin"] }
+# Updated to latest noodles version - individual crates
+noodles = { version = "0.99.0", features = [
     "fasta",
     "fastq",
     "bam",
@@ -23,5 +23,15 @@ noodles = { version = "0.53.0", features = [
     "bgzf",
     "bed",
 ] }
+noodles-fasta = "0.54.0"
+noodles-fastq = "0.19.0"
+noodles-bam = "0.81.0"
+noodles-sam = "0.77.0"
+noodles-bgzf = "0.41.0"
+noodles-bcf = "0.76.0"
+noodles-vcf = "0.79.0"
+noodles-bed = "0.26.0"
+noodles-gff = "0.50.0"
+noodles-cram = "0.84.0"
 gfa = "0.10.1"
 bstr = "1.0.1"

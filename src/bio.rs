@@ -6,7 +6,8 @@ use crate::bio_format::fasta::{from_fasta_inner, from_fastq_inner, nuon_to_fasta
 use crate::bio_format::gfa::from_gfa_inner;
 use crate::bio_format::gff::from_gff_inner;
 use crate::bio_format::Compression;
-use nu_plugin::{EvaluatedCall, LabeledError};
+use nu_plugin::EvaluatedCall;
+use nu_protocol::LabeledError;
 use nu_protocol::Value;
 
 /// We implement a bunch of parsers on the `Bio` struct.

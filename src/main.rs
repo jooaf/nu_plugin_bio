@@ -1,6 +1,6 @@
-use nu_plugin::{serve_plugin, JsonSerializer};
-use nu_plugin_bio::Bio;
+use nu_plugin::{serve_plugin, MsgPackSerializer};
+use nu_plugin_bio::BioPlugin;
 
 fn main() {
-    serve_plugin(&mut Bio {}, JsonSerializer {})
+    serve_plugin(&BioPlugin, MsgPackSerializer {})
 }

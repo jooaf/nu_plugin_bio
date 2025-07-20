@@ -6,17 +6,18 @@ use gfa::{
     optfields::{OptField, OptFieldVal},
     parser::GFAParser,
 };
-use nu_plugin::{EvaluatedCall, LabeledError};
+use nu_plugin::EvaluatedCall;
+use nu_protocol::LabeledError;
 use nu_protocol::{record, Value};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Cursor};
 
 use super::{Compression, SpanExt};
-use noodles::bgzf;
+use noodles_bgzf as bgzf;
 
 /// Compression status of a VCF reader.
 enum GFAReader<'a> {
     Uncompressed(bstr::io::ByteLines<std::io::BufReader<&'a [u8]>>),
-    Compressed(bstr::io::ByteLines<bgzf::Reader<std::io::BufReader<&'a [u8]>>>),
+    Compressed(bstr::io::ByteLines<bgzf::io::Reader<std::io::BufReader<&'a [u8]>>>),
 }
 
 /// We do a lot of string conversion in this module,
@@ -27,11 +28,7 @@ fn string_from_utf8(
     call: &EvaluatedCall,
     context: &str,
 ) -> Result<String, LabeledError> {
-    String::from_utf8(inner).map_err(|e| LabeledError {
-        label: "Could convert bytes to string.".into(),
-        msg: format!("{}: {}", context, e),
-        span: Some(call.head),
-    })
+    String::from_utf8(inner).map_err(|e| LabeledError::new(format!("{}: {}", context, e)))
 }
 
 /// Parse a string representation of the option fields, until
@@ -112,11 +109,7 @@ fn lines_to_nuon<R: BufRead>(
     call: &EvaluatedCall,
 ) -> Result<(), LabeledError> {
     for line in gfa_reader {
-        let line = line.map_err(|e| LabeledError {
-            label: "Could not read a line in the GFA.".into(),
-            msg: format!("cause of failure: {}", e),
-            span: Some(call.head),
-        })?;
+        let line = line.map_err(|e| LabeledError::new(format!("Could not read a line in the GFA. cause of failure: {}", e)))?;
         // if this not added then
         if line.is_empty() {
             continue;
@@ -141,14 +134,12 @@ fn lines_to_nuon<R: BufRead>(
                         ))
                     }
                     Segment(s) => {
-                        // parse as string
                         let name = string_from_utf8(s.name, call, "segment name malformed");
                         let opts: Result<Vec<Value>, _> = s
                             .optional
                             .iter()
                             .map(|e| parse_optfieldval(e.clone(), call))
                             .collect();
-                        // parse as string
                         let seq = string_from_utf8(s.sequence, call, "segment sequence malformed")?;
 
                         segments_nuon.push(Value::record(
@@ -243,11 +234,7 @@ fn lines_to_nuon<R: BufRead>(
             // I don't have access to the .tolerance field...
             // Err(err) if err.can_safely_continue(&parser.tolerance) => (),
             Err(e) => {
-                return Err(LabeledError {
-                    label: "Could not stream input as binary.".into(),
-                    msg: format!("cause of failure: {}", e),
-                    span: Some(call.head),
-                })
+                return Err(LabeledError::new(format!("Could not stream input as binary. cause of failure: {}", e)))
             }
         };
     }
@@ -261,16 +248,16 @@ pub fn from_gfa_inner(
 ) -> Result<Value, LabeledError> {
     let parser: GFAParser<Vec<u8>, Vec<OptField>> = GFAParser::new();
 
-    let bytes = input.as_binary().map_err(|e| LabeledError {
-        label: "Value conversion to binary failed.".into(),
-        msg: format!("cause of failure: {}", e),
-        span: Some(call.head),
-    })?;
+    let bytes = match input {
+        Value::Binary { val, .. } => val.clone(),
+        Value::String { val, .. } => val.as_bytes().to_vec(),
+        _ => return Err(LabeledError::new("Input must be binary or string data")),
+    };
 
-    let reader = BufReader::new(bytes);
+    let reader = BufReader::new(bytes.as_slice());
     let lines = match gz {
         Compression::Uncompressed => GFAReader::Uncompressed(reader.byte_lines()),
-        Compression::Gzipped => GFAReader::Compressed(bgzf::Reader::new(reader).byte_lines()),
+        Compression::Gzipped => GFAReader::Compressed(bgzf::io::Reader::new(BufReader::new(bytes.as_slice())).byte_lines()),
     };
 
     let mut header_nuon = Vec::new();
